@@ -1,0 +1,56 @@
+version: "3.8"
+
+services:
+  kong:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8000:8000" # Kong proxy (API gateway)
+      - "8001:8001" # Kong admin API
+    depends_on:
+      - upload
+      - download
+    volumes:
+      - ./gateway/kong.yaml:/kong/kong.yaml
+
+  upload:
+    build:
+      context: ./services/upload
+      dockerfile: Dockerfile.dev
+    expose:
+      - "6565"
+    volumes:
+      - ./services/upload/src:/src/src
+      - ./services/upload/go.mod:/src/go.mod
+      - ./services/upload/go.sum:/src/go.sum
+      - ./services/upload/.air.toml:/src/.air.toml
+
+  download:
+    build:
+      context: ./services/download
+      dockerfile: Dockerfile.dev
+    expose:
+      - "8012"
+    volumes:
+      - ./services/download/src:/src/src
+      - ./services/download/go.mod:/src/go.mod
+      - ./services/download/go.sum:/src/go.sum
+      - ./services/download/.air.toml:/src/.air.toml
+
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile.dev
+    ports:
+      - "5173:5173"
+    environment:
+      - HOST=0.0.0.0
+      - CHOKIDAR_USEPOLLING=true
+    volumes:
+      - ./client/src:/src/src
+      - ./client/public:/src/public
+      - ./client/index.html:/src/index.html
+      - ./client/vite.config.ts:/src/vite.config.ts
+      - ./client/tsconfig.json:/src/tsconfig.json
+      - ./client/package.json:/src/package.json

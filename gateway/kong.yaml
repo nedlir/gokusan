@@ -1,0 +1,29 @@
+_format_version: "3.0"
+
+plugins:
+  - name: cors
+    tags: [cors-default]
+    config:
+      origins: ["http://localhost:5173"]
+      methods: [GET, POST, PUT, DELETE, OPTIONS]
+      headers: [Accept, Content-Type, Authorization]
+      exposed_headers: [Authorization]
+      credentials: true
+      max_age: 3600
+
+services:
+  - name: upload-service
+    url: http://upload:6565
+    routes:
+      - name: upload-route
+        paths: ["/upload"]
+        strip_path: false
+    tags: [cors-default]
+
+  - name: download-service
+    url: http://download:8012
+    routes:
+      - name: download-route
+        paths: ["/download"]
+        strip_path: false
+    tags: [cors-default]
