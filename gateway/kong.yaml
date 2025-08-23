@@ -6,12 +6,20 @@ plugins:
     config:
       origins: ["http://localhost:5173"]
       methods: [GET, POST, PUT, DELETE, OPTIONS]
-      headers: [Accept, Content-Type, Authorization]
+      headers: [Accept, Content-Type, Authorization, X-User-Name, X-User-Role]
       exposed_headers: [Authorization]
       credentials: true
       max_age: 3600
 
 services:
+  - name: auth-service
+    url: http://auth:8080
+    routes:
+      - name: auth-route
+        paths: ["/auth"]
+        strip_path: true
+    tags: [cors-default]
+
   - name: upload-service
     url: http://upload:6565
     routes:
@@ -19,6 +27,18 @@ services:
         paths: ["/upload"]
         strip_path: false
     tags: [cors-default]
+    plugins:
+      - name: http-proxy
+        config:
+          upstream_url: http://auth:8080/kong-validate
+          forward_request_body: false
+          forward_request_headers: ["Cookie"]
+      - name: request-transformer
+        config:
+          add:
+            headers:
+              - "X-User-Name:$(headers['X-User-Name'])"
+              - "X-User-Role:$(headers['X-User-Role'])"
 
   - name: download-service
     url: http://download:8012
@@ -27,3 +47,15 @@ services:
         paths: ["/download"]
         strip_path: false
     tags: [cors-default]
+    plugins:
+      - name: http-proxy
+        config:
+          upstream_url: http://auth:8080/kong-validate
+          forward_request_body: false
+          forward_request_headers: ["Cookie"]
+      - name: request-transformer
+        config:
+          add:
+            headers:
+              - "X-User-Name:$(headers['X-User-Name'])"
+              - "X-User-Role:$(headers['X-User-Role'])"

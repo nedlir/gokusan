@@ -1,4 +1,5 @@
-version: "3.8"
+include:
+  - infrastructure/keycloak/docker-compose.yaml
 
 services:
   kong:
@@ -11,8 +12,12 @@ services:
     depends_on:
       - upload
       - download
+      - auth
     volumes:
       - ./gateway/kong.yaml:/kong/kong.yaml
+    networks:
+      - default
+      - auth-network
 
   upload:
     build:
@@ -54,3 +59,23 @@ services:
       - ./client/vite.config.ts:/src/vite.config.ts
       - ./client/tsconfig.json:/src/tsconfig.json
       - ./client/package.json:/src/package.json
+    networks:
+      - default
+      - auth-network
+
+  auth:
+    build:
+      context: ./services/auth
+      dockerfile: Dockerfile.dev
+    expose:
+      - "8080"
+    volumes:
+      - ./services/auth/src:/src/src
+      - ./services/auth/go.mod:/src/go.mod
+      - ./services/auth/go.sum:/src/go.sum
+      - ./services/auth/.air.toml:/src/.air.toml
+    depends_on:
+      - keycloak
+    networks:
+      - default
+      - auth-network
