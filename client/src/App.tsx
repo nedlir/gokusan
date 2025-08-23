@@ -1,138 +1,68 @@
-import { useState, useEffect } from "react";
-import Login from "./auth/Login";
-import Register from "./auth/Register";
-
-interface User {
-  name: string;
-  role: string;
-}
+import { useState } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import Login from "./components/auth/Login";
+import Register from "./components/auth/Register";
+import { Button } from "./UI/Button";
+import { fetchSession, logoutUser, uploadFile, downloadFile } from "./http/api";
 
 function App() {
-  const [user, setUser] = useState<User | null>(null);
-  const [isAuthenticatedFromServer, setIsAuthenticatedFromServer] =
-    useState<boolean>(false);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
   const [showRegister, setShowRegister] = useState(false);
 
-  useEffect(() => {
-    setIsLoading(false);
-  }, []);
+  const { data: sessionData, isLoading } = useQuery({
+    queryKey: ["session"],
+    queryFn: fetchSession,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
 
-  const callUpload = async () => {
-    try {
-      const res = await fetch("http://localhost:8000/upload", {
-        method: "GET",
-        credentials: "include",
-      });
+  const isAuthenticated = sessionData?.valid === true;
+  const user = sessionData?.user || null;
 
-      if (res.status === 401) {
-        setUser(null);
-        setIsAuthenticatedFromServer(false);
-        alert("Please login to access this feature.");
-        return;
-      }
-
-      if (!res.ok) {
-        throw new Error(`HTTP error! status: ${res.status}`);
-      }
-
-      const text = await res.text();
-      alert(text);
-    } catch (error) {
+  const uploadMutation = useMutation({
+    mutationFn: uploadFile,
+    onSuccess: (data) => {
+      alert(`Upload successful! ${data}`);
+    },
+    onError: (error) => {
       console.error("Upload failed:", error);
-      if (error instanceof TypeError && error.message.includes("fetch")) {
-        alert(
-          "Cannot connect to server. Please check if the services are running."
-        );
-      } else {
-        alert("Upload failed");
-      }
-    }
-  };
+      alert("Upload failed");
+    },
+  });
 
-  const callDownload = async () => {
-    try {
-      const res = await fetch("http://localhost:8000/download", {
-        method: "GET",
-        credentials: "include",
-      });
-
-      if (res.status === 401) {
-        setUser(null);
-        setIsAuthenticatedFromServer(false);
-        alert("Please login to access this feature.");
-        return;
-      }
-
-      if (!res.ok) {
-        throw new Error(`HTTP error! status: ${res.status}`);
-      }
-
-      const text = await res.text();
-      alert(text);
-    } catch (error) {
+  const downloadMutation = useMutation({
+    mutationFn: downloadFile,
+    onSuccess: (data) => {
+      alert(`Download successful! ${data}`);
+    },
+    onError: (error) => {
       console.error("Download failed:", error);
-      if (error instanceof TypeError && error.message.includes("fetch")) {
-        alert(
-          "Cannot connect to server. Please check if the services are running."
-        );
-      } else {
-        alert("Download failed");
-      }
-    }
-  };
-
-  const handleLogin = (userData: User) => {
-    setUser(userData);
-    setIsAuthenticatedFromServer(true);
-  };
-
-  const handleLogout = async () => {
-    try {
-      await fetch("http://localhost:8000/auth/logout", {
-        method: "POST",
-        credentials: "include",
-      });
-    } catch (error) {
-      console.error("Logout request failed:", error);
-    } finally {
-      setUser(null);
-      setIsAuthenticatedFromServer(false);
-      setShowRegister(false);
-    }
-  };
-
-  const handleRegister = () => {
-    setShowRegister(false);
-  };
+      alert("Download failed");
+    },
+  });
 
   if (isLoading) {
-    return (
-      <div>
-        <div>Loading...</div>
-      </div>
-    );
+    return <div>Loading...</div>;
   }
 
-  if (!isAuthenticatedFromServer || !user) {
+  if (!isAuthenticated || !user) {
     return (
       <div>
         {showRegister ? (
           <div>
-            <Register onRegister={handleRegister} />
+            <Register />
             <p>
               Already have an account?{" "}
-              <button onClick={() => setShowRegister(false)}>Login here</button>
+              <Button onClick={() => setShowRegister(false)}>Login here</Button>
             </p>
           </div>
         ) : (
           <div>
-            <Login onLogin={handleLogin} />
+            <Login />
             <p>
               Don't have an account?{" "}
-              <button onClick={() => setShowRegister(true)}>
+              <Button onClick={() => setShowRegister(true)}>
                 Register here
-              </button>
+              </Button>
             </p>
           </div>
         )}
@@ -140,19 +70,32 @@ function App() {
     );
   }
 
+  const handleLogout = async () => {
+    await logoutUser();
+    window.location.reload();
+  };
+
   return (
     <div>
       <div>
         <div>Welcome, {user.name}!</div>
-        <p>
-          Role: <strong>{user.role}</strong>
-        </p>
-        <button onClick={handleLogout}>Logout</button>
+        <p>Role: {user.role}</p>
+        <Button onClick={handleLogout}>Logout</Button>
       </div>
 
       <div>
-        <button onClick={callUpload}>Upload</button>
-        <button onClick={callDownload}>Download</button>
+        <Button
+          onClick={() => uploadMutation.mutate()}
+          disabled={uploadMutation.isPending}
+        >
+          {uploadMutation.isPending ? "Uploading..." : "Upload"}
+        </Button>
+        <Button
+          onClick={() => downloadMutation.mutate()}
+          disabled={downloadMutation.isPending}
+        >
+          {downloadMutation.isPending ? "Downloading..." : "Download"}
+        </Button>
       </div>
     </div>
   );
