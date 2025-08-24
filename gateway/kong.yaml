@@ -11,6 +11,20 @@ plugins:
       credentials: true
       max_age: 3600
 
+  - name: request-transformer
+    tags: [auth-default]
+    config:
+      add:
+        headers: # TODO: change this, it's just for testing
+          - "X-User-Name:development-user"
+          - "X-User-Role:user"
+
+consumers:
+  - username: authenticated-users
+    tags: [auth-default]
+    keyauth_credentials:
+      - key: auth-token-key
+
 services:
   - name: auth-service
     url: http://auth:8080
@@ -26,19 +40,7 @@ services:
       - name: upload-route
         paths: ["/upload"]
         strip_path: false
-    tags: [cors-default]
-    plugins:
-      - name: http-proxy
-        config:
-          upstream_url: http://auth:8080/kong-validate
-          forward_request_body: false
-          forward_request_headers: ["Cookie"]
-      - name: request-transformer
-        config:
-          add:
-            headers:
-              - "X-User-Name:$(headers['X-User-Name'])"
-              - "X-User-Role:$(headers['X-User-Role'])"
+    tags: [cors-default, auth-default]
 
   - name: download-service
     url: http://download:8012
@@ -46,16 +48,4 @@ services:
       - name: download-route
         paths: ["/download"]
         strip_path: false
-    tags: [cors-default]
-    plugins:
-      - name: http-proxy
-        config:
-          upstream_url: http://auth:8080/kong-validate
-          forward_request_body: false
-          forward_request_headers: ["Cookie"]
-      - name: request-transformer
-        config:
-          add:
-            headers:
-              - "X-User-Name:$(headers['X-User-Name'])"
-              - "X-User-Role:$(headers['X-User-Role'])"
+    tags: [cors-default, auth-default]
