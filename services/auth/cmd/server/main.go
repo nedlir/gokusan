@@ -16,8 +16,14 @@ import (
 func main() {
 	cfg := config.Load()
 
+	redisClient, err := config.NewRedisClient(cfg)
+	if err != nil {
+		log.Fatalf("Failed to connect to Redis: %v", err)
+	}
+
 	kc := keycloak.New(cfg.KeycloakURL, cfg.KeycloakRealm, cfg.AdminUsername, cfg.AdminPassword)
-	jwksClient := jwks.NewJWKSClient(cfg.KeycloakURL+"/realms/"+cfg.KeycloakRealm+"/protocol/openid-connect/certs", cfg.JWKSCacheTTL)
+	jwksURL := cfg.KeycloakURL + "/realms/" + cfg.KeycloakRealm + "/protocol/openid-connect/certs"
+	jwksClient := jwks.NewJWKSClient(jwksURL, cfg.KeycloakRealm, cfg.JWKSCacheTTL, redisClient)
 
 	svc := auth.NewService(cfg, kc, jwksClient)
 
