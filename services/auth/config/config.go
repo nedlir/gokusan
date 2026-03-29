@@ -1,9 +1,14 @@
 package config
 
 import (
+	"context"
+	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 type Config struct {
@@ -18,6 +23,10 @@ type Config struct {
 	CookieName      string
 	CookieMaxAgeSec int
 	JWKSCacheTTL    time.Duration
+
+	RedisAddr     string
+	RedisPassword string
+	RedisDB       int
 }
 
 func Load() Config {
@@ -30,7 +39,24 @@ func Load() Config {
 		CookieName:      getEnv("COOKIE_NAME", "auth_token"),
 		CookieMaxAgeSec: getEnvInt("COOKIE_MAX_AGE_SEC", 24*60*60),
 		JWKSCacheTTL:    getEnvDuration("JWKS_CACHE_TTL", 5*time.Minute),
+		RedisAddr:       getEnv("REDIS_ADDR", "redis:6379"),
+		RedisPassword:   getEnv("REDIS_PASSWORD", ""),
+		RedisDB:         getEnvInt("REDIS_DB", 0),
 	}
+}
+
+// NewRedisClient creates and pings a Redis client from the loaded config.
+func NewRedisClient(cfg Config) (*redis.Client, error) {
+	client := redis.NewClient(&redis.Options{
+		Addr:     cfg.RedisAddr,
+		Password: cfg.RedisPassword,
+		DB:       cfg.RedisDB,
+	})
+	if err := client.Ping(context.Background()).Err(); err != nil {
+		return nil, fmt.Errorf("redis ping failed: %w", err)
+	}
+	log.Printf("Connected to Redis at %s", cfg.RedisAddr)
+	return client, nil
 }
 
 func getEnv(key, def string) string {

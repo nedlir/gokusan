@@ -1,51 +1,268 @@
 _format_version: "3.0"
 
-plugins:
-  - name: cors
-    tags: [cors-default]
-    config:
-      origins: ["http://localhost:5173"]
-      methods: [GET, POST, PUT, DELETE, OPTIONS]
-      headers: [Accept, Content-Type, Authorization, X-User-Name, X-User-Role]
-      exposed_headers: [Authorization]
-      credentials: true
-      max_age: 3600
-
-  - name: request-transformer
-    tags: [auth-default]
-    config:
-      add:
-        headers: # TODO: change this, it's just for testing
-          - "X-User-Name:development-user"
-          - "X-User-Role:user"
-
-consumers:
-  - username: authenticated-users
-    tags: [auth-default]
-    keyauth_credentials:
-      - key: auth-token-key
-
 services:
+  # ── Auth Service ──────────────────────────────────────────────────────────
   - name: auth-service
     url: http://auth:8080
     routes:
       - name: auth-route
         paths: ["/auth"]
         strip_path: true
-    tags: [cors-default]
+    plugins:
+      - name: cors
+        config:
+          origins: ["http://localhost:5173"]
+          methods: [GET, POST, PUT, DELETE, OPTIONS]
+          headers: [Accept, Content-Type, Authorization, X-User-Name, X-User-Role, Cookie]
+          exposed_headers: [Authorization]
+          credentials: true
+          max_age: 3600
+      - name: rate-limiting
+        config:
+          minute: 100
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
 
+  # ── Upload Service ────────────────────────────────────────────────────────
   - name: upload-service
     url: http://upload:6565
     routes:
       - name: upload-route
         paths: ["/upload"]
         strip_path: false
-    tags: [cors-default, auth-default]
+    plugins:
+      - name: cors
+        config:
+          origins: ["http://localhost:5173"]
+          methods: [GET, POST, PUT, DELETE, OPTIONS]
+          headers: [Accept, Content-Type, Authorization, X-User-Name, X-User-Role, Cookie]
+          exposed_headers: [Authorization]
+          credentials: true
+          max_age: 3600
+      - name: rate-limiting
+        config:
+          minute: 100
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+      - name: pre-function
+        config:
+          access:
+            - |
+              local http = require("resty.http")
+              local httpc = http.new()
 
+              -- Forward the incoming Cookie header to the auth service
+              local cookie = kong.request.get_header("Cookie")
+              local headers = { ["Cookie"] = cookie }
+
+              local res, err = httpc:request_uri("http://auth:8080/auth/validate", {
+                method = "GET",
+                headers = headers,
+              })
+
+              if err then
+                return kong.response.exit(503, { message = "Auth service unreachable" })
+              end
+
+              if res.status ~= 200 then
+                return kong.response.exit(401, { message = "Unauthorized" })
+              end
+
+              -- Forward identity headers to upstream
+              local user_name = res.headers["X-User-Name"]
+              local user_role = res.headers["X-User-Role"]
+              if user_name then
+                kong.service.request.set_header("X-User-Name", user_name)
+              end
+              if user_role then
+                kong.service.request.set_header("X-User-Role", user_role)
+              end
+
+  # ── Download Service ──────────────────────────────────────────────────────
   - name: download-service
     url: http://download:8012
     routes:
       - name: download-route
         paths: ["/download"]
         strip_path: false
-    tags: [cors-default, auth-default]
+    plugins:
+      - name: cors
+        config:
+          origins: ["http://localhost:5173"]
+          methods: [GET, POST, PUT, DELETE, OPTIONS]
+          headers: [Accept, Content-Type, Authorization, X-User-Name, X-User-Role, Cookie]
+          exposed_headers: [Authorization]
+          credentials: true
+          max_age: 3600
+      - name: rate-limiting
+        config:
+          minute: 100
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+      - name: pre-function
+        config:
+          access:
+            - |
+              local http = require("resty.http")
+              local httpc = http.new()
+
+              local cookie = kong.request.get_header("Cookie")
+              local headers = { ["Cookie"] = cookie }
+
+              local res, err = httpc:request_uri("http://auth:8080/auth/validate", {
+                method = "GET",
+                headers = headers,
+              })
+
+              if err then
+                return kong.response.exit(503, { message = "Auth service unreachable" })
+              end
+
+              if res.status ~= 200 then
+                return kong.response.exit(401, { message = "Unauthorized" })
+              end
+
+              local user_name = res.headers["X-User-Name"]
+              local user_role = res.headers["X-User-Role"]
+              if user_name then
+                kong.service.request.set_header("X-User-Name", user_name)
+              end
+              if user_role then
+                kong.service.request.set_header("X-User-Role", user_role)
+              end
+
+  # ── Metadata Service ──────────────────────────────────────────────────────
+  - name: metadata-service
+    url: http://metadata:8013
+    routes:
+      - name: files-route
+        paths: ["/files"]
+        strip_path: false
+    plugins:
+      - name: cors
+        config:
+          origins: ["http://localhost:5173"]
+          methods: [GET, POST, PUT, DELETE, OPTIONS]
+          headers: [Accept, Content-Type, Authorization, X-User-Name, X-User-Role, Cookie]
+          exposed_headers: [Authorization]
+          credentials: true
+          max_age: 3600
+      - name: rate-limiting
+        config:
+          minute: 100
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+      - name: pre-function
+        config:
+          access:
+            - |
+              local http = require("resty.http")
+              local httpc = http.new()
+
+              local cookie = kong.request.get_header("Cookie")
+              local headers = { ["Cookie"] = cookie }
+
+              local res, err = httpc:request_uri("http://auth:8080/auth/validate", {
+                method = "GET",
+                headers = headers,
+              })
+
+              if err then
+                return kong.response.exit(503, { message = "Auth service unreachable" })
+              end
+
+              if res.status ~= 200 then
+                return kong.response.exit(401, { message = "Unauthorized" })
+              end
+
+              local user_name = res.headers["X-User-Name"]
+              local user_role = res.headers["X-User-Role"]
+              if user_name then
+                kong.service.request.set_header("X-User-Name", user_name)
+              end
+              if user_role then
+                kong.service.request.set_header("X-User-Role", user_role)
+              end
+
+  # ── Share Service ─────────────────────────────────────────────────────────
+  # GET /share/:token is public; POST and DELETE require auth.
+  # We split into two routes to apply the pre-function only where needed.
+  - name: share-service
+    url: http://share:8014
+    routes:
+      # Public: GET /share/:token (token lookup / file proxy)
+      - name: share-public-route
+        paths: ["/share"]
+        methods: [GET]
+        strip_path: false
+        plugins:
+          - name: cors
+            config:
+              origins: ["http://localhost:5173"]
+              methods: [GET, POST, PUT, DELETE, OPTIONS]
+              headers: [Accept, Content-Type, Authorization, X-User-Name, X-User-Role, Cookie]
+              exposed_headers: [Authorization]
+              credentials: true
+              max_age: 3600
+          - name: rate-limiting
+            config:
+              minute: 100
+              policy: redis
+              redis_host: redis
+              redis_port: 6379
+
+      # Protected: POST /share and DELETE /share/:token
+      - name: share-protected-route
+        paths: ["/share"]
+        methods: [POST, DELETE]
+        strip_path: false
+        plugins:
+          - name: cors
+            config:
+              origins: ["http://localhost:5173"]
+              methods: [GET, POST, PUT, DELETE, OPTIONS]
+              headers: [Accept, Content-Type, Authorization, X-User-Name, X-User-Role, Cookie]
+              exposed_headers: [Authorization]
+              credentials: true
+              max_age: 3600
+          - name: rate-limiting
+            config:
+              minute: 100
+              policy: redis
+              redis_host: redis
+              redis_port: 6379
+          - name: pre-function
+            config:
+              access:
+                - |
+                  local http = require("resty.http")
+                  local httpc = http.new()
+
+                  local cookie = kong.request.get_header("Cookie")
+                  local headers = { ["Cookie"] = cookie }
+
+                  local res, err = httpc:request_uri("http://auth:8080/auth/validate", {
+                    method = "GET",
+                    headers = headers,
+                  })
+
+                  if err then
+                    return kong.response.exit(503, { message = "Auth service unreachable" })
+                  end
+
+                  if res.status ~= 200 then
+                    return kong.response.exit(401, { message = "Unauthorized" })
+                  end
+
+                  local user_name = res.headers["X-User-Name"]
+                  local user_role = res.headers["X-User-Role"]
+                  if user_name then
+                    kong.service.request.set_header("X-User-Name", user_name)
+                  end
+                  if user_role then
+                    kong.service.request.set_header("X-User-Role", user_role)
+                  end

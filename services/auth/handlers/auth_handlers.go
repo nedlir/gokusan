@@ -46,7 +46,10 @@ func (h *AuthHandler) KongValidate(c *gin.Context) {
 	}
 	c.Header(constants.HeaderUserName, user.Name)
 	c.Header(constants.HeaderUserRole, user.Role)
-	c.Status(http.StatusOK)
+	c.JSON(http.StatusOK, gin.H{
+		"valid": true,
+		"user":  gin.H{"name": user.Name, "role": user.Role},
+	})
 }
 
 func (h *AuthHandler) Login(c *gin.Context) {

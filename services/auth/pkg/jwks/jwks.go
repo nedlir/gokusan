@@ -1,6 +1,7 @@
 package jwks
 
 import (
+	"context"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
@@ -9,8 +10,9 @@ import (
 	"log"
 	"math/big"
 	"net/http"
-	"sync"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 type JWKS struct {
@@ -26,90 +28,105 @@ type JWK struct {
 	E   string `json:"e"`
 }
 
+// JWKSClient fetches and caches JWKS keys in Redis under the key pattern jwks:<realm>.
 type JWKSClient struct {
-	url       string
-	keys      map[string]*rsa.PublicKey
-	mutex     sync.RWMutex
-	lastFetch time.Time
-	cacheTTL  time.Duration
+	url      string
+	realm    string
+	cacheTTL time.Duration
+	redis    *redis.Client
 }
 
-func NewJWKSClient(url string, cacheTTL time.Duration) *JWKSClient {
+func NewJWKSClient(url, realm string, cacheTTL time.Duration, redisClient *redis.Client) *JWKSClient {
 	return &JWKSClient{
 		url:      url,
-		keys:     make(map[string]*rsa.PublicKey),
+		realm:    realm,
 		cacheTTL: cacheTTL,
+		redis:    redisClient,
 	}
 }
 
 func (j *JWKSClient) GetKey(kid string) (*rsa.PublicKey, error) {
-	j.mutex.RLock()
-	if key, exists := j.keys[kid]; exists && time.Since(j.lastFetch) < j.cacheTTL {
-		j.mutex.RUnlock()
-		return key, nil
+	keys, err := j.loadKeys()
+	if err != nil {
+		return nil, err
 	}
-	j.mutex.RUnlock()
-
-	if err := j.fetchKeys(); err != nil {
-		return nil, fmt.Errorf("failed to fetch JWKS: %v", err)
+	key, ok := keys[kid]
+	if !ok {
+		return nil, fmt.Errorf("key with kid '%s' not found", kid)
 	}
-
-	j.mutex.RLock()
-	defer j.mutex.RUnlock()
-	if key, exists := j.keys[kid]; exists {
-		return key, nil
-	}
-
-	return nil, fmt.Errorf("key with kid '%s' not found", kid)
+	return key, nil
 }
 
-func (j *JWKSClient) fetchKeys() error {
-	j.mutex.Lock()
-	defer j.mutex.Unlock()
+// loadKeys returns the parsed RSA keys, reading from Redis cache first and
+// falling back to a live JWKS fetch on a cache miss.
+func (j *JWKSClient) loadKeys() (map[string]*rsa.PublicKey, error) {
+	ctx := context.Background()
+	cacheKey := "jwks:" + j.realm
 
-	if time.Since(j.lastFetch) < j.cacheTTL {
-		return nil
+	cached, err := j.redis.Get(ctx, cacheKey).Bytes()
+	if err == nil {
+		return j.parseJWKSBytes(cached)
+	}
+	if err != redis.Nil {
+		log.Printf("Redis JWKS cache read error: %v — falling back to live fetch", err)
 	}
 
+	// Cache miss: fetch from Keycloak
+	body, err := j.fetchRaw()
+	if err != nil {
+		return nil, err
+	}
+
+	// Store raw JSON in Redis with TTL
+	if setErr := j.redis.Set(ctx, cacheKey, body, j.cacheTTL).Err(); setErr != nil {
+		log.Printf("Failed to cache JWKS in Redis: %v", setErr)
+	}
+
+	return j.parseJWKSBytes(body)
+}
+
+func (j *JWKSClient) fetchRaw() ([]byte, error) {
 	resp, err := http.Get(j.url)
 	if err != nil {
-		return fmt.Errorf("failed to fetch JWKS: %v", err)
+		return nil, fmt.Errorf("failed to fetch JWKS: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("JWKS endpoint returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("JWKS endpoint returned status %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read JWKS response: %v", err)
+		return nil, fmt.Errorf("failed to read JWKS response: %v", err)
 	}
 
+	log.Printf("Fetched fresh JWKS from %s", j.url)
+	return body, nil
+}
+
+func (j *JWKSClient) parseJWKSBytes(data []byte) (map[string]*rsa.PublicKey, error) {
 	var jwks JWKS
-	if err := json.Unmarshal(body, &jwks); err != nil {
-		return fmt.Errorf("failed to parse JWKS: %v", err)
+	if err := json.Unmarshal(data, &jwks); err != nil {
+		return nil, fmt.Errorf("failed to parse JWKS: %v", err)
 	}
 
-	j.keys = make(map[string]*rsa.PublicKey)
+	keys := make(map[string]*rsa.PublicKey)
 	for _, key := range jwks.Keys {
 		if key.Kty != "RSA" || key.Use != "sig" {
 			continue
 		}
-		publicKey, err := j.parseRSAKey(key)
+		pub, err := parseRSAKey(key)
 		if err != nil {
 			log.Printf("Failed to parse RSA key %s: %v", key.Kid, err)
 			continue
 		}
-		j.keys[key.Kid] = publicKey
+		keys[key.Kid] = pub
 	}
-
-	j.lastFetch = time.Now()
-	log.Printf("Successfully fetched %d keys from JWKS", len(j.keys))
-	return nil
+	return keys, nil
 }
 
-func (j *JWKSClient) parseRSAKey(key JWK) (*rsa.PublicKey, error) {
+func parseRSAKey(key JWK) (*rsa.PublicKey, error) {
 	nBytes, err := base64.RawURLEncoding.DecodeString(key.N)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode modulus: %v", err)
