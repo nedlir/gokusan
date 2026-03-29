@@ -1,6 +1,7 @@
 import { apiClient } from "../config/axiosConfig";
 import type { User } from "../types/User";
 import type { ApiResponse } from "../types/ApiResponse";
+import type { File as UserFile } from "../types/File";
 
 export type SessionData = {
   valid: boolean;
@@ -53,12 +54,26 @@ export const logoutUser = async (): Promise<ApiResponse> => {
   }
 };
 
-export const uploadFile = async (): Promise<unknown> => {
-  const { data } = await apiClient.get("/upload");
+export const getFiles = async (): Promise<UserFile[]> => {
+  const { data } = await apiClient.get<{ success: boolean; files: UserFile[] }>("/files");
+  return data.files ?? [];
+};
+
+export const uploadFile = async (file: globalThis.File): Promise<{ fileId: string }> => {
+  const form = new FormData();
+  form.append("file", file);
+  const { data } = await apiClient.post<{ success: boolean; fileId: string }>("/upload", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return { fileId: data.fileId };
+};
+
+export const downloadFile = async (id: string): Promise<Blob> => {
+  const { data } = await apiClient.get(`/download/${id}`, { responseType: "blob" });
   return data;
 };
 
-export const downloadFile = async (): Promise<unknown> => {
-  const { data } = await apiClient.get("/download");
-  return data;
+export const shareFile = async (fileId: string, ttl: number): Promise<{ url: string }> => {
+  const { data } = await apiClient.post<{ success: boolean; url: string }>("/share", { fileId, ttl });
+  return { url: data.url };
 };
