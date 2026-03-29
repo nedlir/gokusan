@@ -1,34 +1,35 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	minio "github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
+	"download/config"
+	"download/handlers"
 )
 
 func main() {
-	r := gin.Default()
+	cfg := config.Load()
 
-	r.GET("/download", func(c *gin.Context) {
-		// TODO: Currently trusting headers without validation
-		// TODO: Kong is hardcoding admin headers instead of validating JWTs
-		// TODO: obviously tthese headers can be spoofed if Kong auth is bypassed
-		userName := c.GetHeader("X-User-Name")
-		userRole := c.GetHeader("X-User-Role")
-
-		if userName == "" || userRole == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-			return
-		}
-		c.String(http.StatusOK, fmt.Sprintf("Download successful! Welcome %s (role: %s)", userName, userRole))
+	mc, err := minio.New(cfg.MinIOEndpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4(cfg.MinIOAccessKey, cfg.MinIOSecretKey, ""),
+		Secure: cfg.MinIOUseSSL,
 	})
+	if err != nil {
+		log.Fatalf("failed to create MinIO client: %v", err)
+	}
 
+	h := handlers.New(mc, cfg.MinIOBucket, cfg.MetadataServiceURL)
+
+	r := gin.Default()
+	r.GET("/download/:id", h.Download)
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "healthy"})
 	})
 
-	log.Println("Download service starting on :8012")
-	r.Run(":8012")
+	log.Printf("Download service starting on :%s", cfg.Port)
+	r.Run(":" + cfg.Port)
 }
