@@ -2,19 +2,113 @@ include:
   - infrastructure/keycloak/docker-compose.yaml
 
 services:
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: gokusan
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./services/metadata/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    expose:
+      - "2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    expose:
+      - "9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "kafka:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ── Application Services ─────────────────────────────────────────────────────
+
   kong:
     build:
       context: ./gateway
       dockerfile: Dockerfile.dev
     ports:
-      - "8000:8000" # Kong proxy (API gateway)
-      - "8001:8001" # Kong admin API
+      - "8000:8000"
+      - "8001:8001"
     depends_on:
       - upload
       - download
       - auth
+      - metadata
+      - share
     volumes:
       - ./gateway/kong.yaml:/kong/kong.yaml
+    networks:
+      - default
+      - auth-network
+
+  auth:
+    build:
+      context: ./services/auth
+      dockerfile: Dockerfile.dev
+    expose:
+      - "8080"
+    volumes:
+      - ./services/auth/src:/src/src
+      - ./services/auth/go.mod:/src/go.mod
+      - ./services/auth/go.sum:/src/go.sum
+      - ./services/auth/.air.toml:/src/.air.toml
+    depends_on:
+      - keycloak
+      - redis
     networks:
       - default
       - auth-network
@@ -25,11 +119,20 @@ services:
       dockerfile: Dockerfile.dev
     expose:
       - "6565"
+    environment:
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_BUCKET=gokusan
+      - KAFKA_BROKERS=kafka:9092
     volumes:
       - ./services/upload/src:/src/src
       - ./services/upload/go.mod:/src/go.mod
       - ./services/upload/go.sum:/src/go.sum
       - ./services/upload/.air.toml:/src/.air.toml
+    depends_on:
+      - minio
+      - kafka
 
   download:
     build:
@@ -37,11 +140,97 @@ services:
       dockerfile: Dockerfile.dev
     expose:
       - "8012"
+    environment:
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_BUCKET=gokusan
+      - METADATA_SERVICE_URL=http://metadata:8013
     volumes:
       - ./services/download/src:/src/src
       - ./services/download/go.mod:/src/go.mod
       - ./services/download/go.sum:/src/go.sum
       - ./services/download/.air.toml:/src/.air.toml
+    depends_on:
+      - minio
+      - metadata
+
+  metadata:
+    build:
+      context: ./services/metadata
+      dockerfile: Dockerfile.dev
+    expose:
+      - "8013"
+    environment:
+      - PORT=8013
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/gokusan?sslmode=disable
+      - KAFKA_BROKER=kafka:9092
+      - KAFKA_GROUP=metadata-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  share:
+    build:
+      context: ./services/share
+      dockerfile: Dockerfile.dev
+    expose:
+      - "8014"
+    environment:
+      - PORT=8014
+      - REDIS_ADDR=redis:6379
+      - REDIS_PASSWORD=
+      - REDIS_DB=0
+      - METADATA_SERVICE_URL=http://metadata:8013
+      - DOWNLOAD_SERVICE_URL=http://download:8012
+    depends_on:
+      redis:
+        condition: service_healthy
+      metadata:
+        condition: service_started
+      download:
+        condition: service_started
+
+  sanitization:
+    build:
+      context: ./services/sanitization
+      dockerfile: Dockerfile.dev
+    environment:
+      - KAFKA_BROKERS=kafka:9092
+      - KAFKA_TOPIC=file.uploaded
+      - KAFKA_DLQ_TOPIC=file.uploaded.dlq
+      - KAFKA_GROUP_ID=sanitization-worker
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_BUCKET=gokusan
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_started
+
+  cleanup:
+    build:
+      context: ./services/cleanup
+      dockerfile: Dockerfile.dev
+    environment:
+      - CRON_SCHEDULE=@hourly
+      - METADATA_SERVICE_URL=http://metadata:8013
+      - KAFKA_BROKERS=kafka:9092
+      - KAFKA_TOPIC=file.deleted
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_BUCKET=gokusan
+    depends_on:
+      - metadata
+      - kafka
+      - minio
 
   client:
     build:
@@ -63,19 +252,6 @@ services:
       - default
       - auth-network
 
-  auth:
-    build:
-      context: ./services/auth
-      dockerfile: Dockerfile.dev
-    expose:
-      - "8080"
-    volumes:
-      - ./services/auth/src:/src/src
-      - ./services/auth/go.mod:/src/go.mod
-      - ./services/auth/go.sum:/src/go.sum
-      - ./services/auth/.air.toml:/src/.air.toml
-    depends_on:
-      - keycloak
-    networks:
-      - default
-      - auth-network
+volumes:
+  postgres_data:
+  minio_data:
